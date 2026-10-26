@@ -1,0 +1,10 @@
+.venv/
+.venv-pi/
+__pycache__/
+.pytest_cache/
+.idea/
+.env
+data/
+*.pyc
+*.log
+artifacts/

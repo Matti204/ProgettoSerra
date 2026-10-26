@@ -1,0 +1,3 @@
+# Solo Raspberry: il backend dei pin viene installato con apt (python3-lgpio).
+-r requirements.txt
+gpiozero>=2.0.1,<3

@@ -1,0 +1,3 @@
+# Facoltativo: usa Chrome/Edge già installato, senza Node o browser aggiuntivi.
+-r requirements-dev.txt
+websocket-client>=1.8,<2

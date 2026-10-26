@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Smart Greenhouse Kiosk
+Comment=Dashboard touchscreen con attesa e riconnessione al server
+Exec=@@PROJECT@@/.venv-pi/bin/python @@PROJECT@@/deploy/kiosk.py
+Terminal=false
+X-GNOME-Autostart-enabled=true
