@@ -119,8 +119,14 @@ function render(data, syncForm = false) {
       value.append(document.createTextNode(new Intl.NumberFormat("it-IT", {maximumFractionDigits: 1}).format(sensor.value)));
       const unit = document.createElement("span"); unit.textContent = sensor.unit; value.append(unit);
     }
-    $(sensor.id + "-tag").textContent = sensor.status === "simulated" ? "Simulato" : unavailable ? "Assente" : "Collegato";
-    $(sensor.id + "-note").textContent = sensor.status === "simulated" ? "Dato dimostrativo, non misurato" : unavailable ? "Nessun sensore configurato" : "Lettura dal sensore";
+    const tags = {simulated: "Simulato", pending: "In attesa", error: "Errore", stale: "Scaduto", unavailable: "Disattivato"};
+    $(sensor.id + "-tag").textContent = tags[sensor.status] || sensor.source || "Collegato";
+    $(sensor.id + "-tag").classList.toggle("sensor-error", ["error", "stale"].includes(sensor.status));
+    const measured = sensor.sampled_at
+      ? new Date(sensor.sampled_at).toLocaleTimeString("it-IT", {timeZone: system.timezone}) : "";
+    $(sensor.id + "-note").textContent = sensor.status === "simulated" ? "Dato dimostrativo, non misurato"
+      : unavailable ? sensor.message || "Lettura non disponibile"
+      : `${sensor.source || "Sensore"} · ${measured ? `lettura delle ${measured}` : "lettura aggiornata"}`;
   }
   if (syncForm || !$("schedule-form").dataset.dirty) {
     $("on-time").value = lamp.schedule.on_time;
@@ -138,10 +144,15 @@ function render(data, syncForm = false) {
   const current = new Date(system.server_time);
   $("system-clock").textContent = current.toLocaleTimeString("it-IT", {timeZone: system.timezone, hour: "2-digit", minute: "2-digit"});
   $("date-label").textContent = current.toLocaleDateString("it-IT", {timeZone: system.timezone, day: "numeric", month: "long", year: "numeric"});
-  $("system-note").textContent = system.healthy ? "Il sistema funziona anche con questa pagina chiusa." : "Il sistema richiede attenzione. Controlla il messaggio di errore.";
+  $("system-note").textContent = !system.healthy ? "Il sistema richiede attenzione. Controlla il messaggio di errore."
+    : system.sensors_healthy === false ? "Letture sensori non disponibili. Il controllo lampada rimane attivo."
+    : "Il sistema funziona anche con questa pagina chiusa.";
   $("device-relay").textContent = mock ? "Controller virtuale · nessun GPIO utilizzato" : `BCM ${system.relay.pin} · ${system.relay.active_high ? "Active-high" : "Active-low"}`;
   $("device-relay-status").textContent = lamp.error ? "Errore" : mock ? "Virtuale" : "Configurato";
-  $("device-sensors").textContent = mock ? "2 letture dimostrative · simulazione" : "Nessun sensore configurato";
+  const configuredSensors = sensors.filter(sensor => sensor.configured);
+  $("device-sensors").textContent = mock ? "2 letture dimostrative · simulazione"
+    : configuredSensors.length ? configuredSensors.map(sensor => `${sensor.source} · BCM ${sensor.gpio}${sensor.device_id ? ` · ${sensor.device_id}` : ""}`).join(" / ")
+    : "Nessun sensore abilitato nel file .env";
   $("last-update").textContent = `Aggiornato alle ${current.toLocaleTimeString("it-IT", {timeZone: system.timezone})}`;
   $("error-banner").hidden = system.healthy;
   $("error-banner").textContent = lamp.error || (system.healthy ? "" : "Programmazione non disponibile. Riavvia il servizio.");

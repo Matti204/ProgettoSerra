@@ -23,7 +23,8 @@ from services.storage import SettingsStore
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings=None, *, start_scheduler=True, controller=None, clock=None):
+def create_app(settings=None, *, start_scheduler=True, controller=None, clock=None,
+               sensor_service=None, start_sensors=True):
     settings = settings or Settings.from_env()
     app = Flask(__name__)
     app.config.update(MAX_CONTENT_LENGTH=4096, TRUSTED_HOSTS=list(settings.allowed_hosts))
@@ -34,13 +35,13 @@ def create_app(settings=None, *, start_scheduler=True, controller=None, clock=No
         hardware = controller or make_controller(settings)
         store = SettingsStore(settings.data_dir / "greenhouse.sqlite3")
         lamp = LampService(hardware, store, settings.timezone, clock)
+        sensors = sensor_service or SensorService.from_settings(settings)
     except Exception:
         if hardware is not None:
             hardware.close()
         instance_lock.close()
         raise
     scheduler = LampScheduler(lamp)
-    sensors = SensorService(settings.hardware_mode == "mock")
     started_at = time.monotonic()
     closed = False
 
@@ -52,13 +53,18 @@ def create_app(settings=None, *, start_scheduler=True, controller=None, clock=No
                 scheduler.stop()
                 lamp.close()
             finally:
-                instance_lock.close()
-                atexit.unregister(shutdown)
+                try:
+                    sensors.close()
+                finally:
+                    instance_lock.close()
+                    atexit.unregister(shutdown)
 
-    app.extensions.update(lamp=lamp, scheduler=scheduler, settings=settings, shutdown=shutdown)
+    app.extensions.update(lamp=lamp, scheduler=scheduler, sensors=sensors, settings=settings, shutdown=shutdown)
     atexit.register(shutdown)
     if start_scheduler:
         scheduler.start()
+    if start_sensors:
+        sensors.start()
 
     def loopback_client():
         try:
@@ -102,16 +108,18 @@ def create_app(settings=None, *, start_scheduler=True, controller=None, clock=No
 
     def status():
         snapshot = lamp.snapshot()
+        readings = sensors.readings()
         scheduler_ok = scheduler.healthy if start_scheduler else None
         return {
             "lamp": snapshot,
-            "sensors": sensors.readings(),
+            "sensors": readings,
             "system": {
                 "hardware_mode": settings.hardware_mode, "network_mode": settings.network_mode,
                 "timezone": settings.timezone, "server_time": lamp.now().isoformat(),
                 "uptime_seconds": int(time.monotonic() - started_at),
                 "scheduler_healthy": scheduler_ok,
                 "healthy": not snapshot["error"] and (scheduler_ok is not False),
+                "sensors_healthy": all(not sensor["configured"] or sensor["status"] == "ok" for sensor in readings),
                 "relay": {"pin": settings.relay_pin, "active_high": settings.relay_active_high,
                           "numbering": "BCM", "requires_restart": True},
             },

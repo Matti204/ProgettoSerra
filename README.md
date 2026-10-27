@@ -2,6 +2,8 @@
 
 Webapp leggera per sviluppare sul PC e controllare una serra con Raspberry Pi 3 Model B. Python 3.10+, Flask, HTML/CSS/JavaScript vanilla, SQLite. Nessun Node.js, Docker, servizio cloud o asset esterno. Interfaccia in italiano, utilizzabile anche su touchscreen da 800 × 480 con scorrimento verticale.
 
+Per l'utilizzo attuale del progetto, il Raspberry può funzionare **senza schermo e senza desktop all'avvio**, con accesso dal browser di PC o telefono sulla stessa LAN. Il servizio Flask e lo scheduler sono indipendenti dal desktop; il Kiosk rimane un'opzione per chi utilizza un touchscreen locale.
+
 **Il progetto è locale. La configurazione predefinita usa soltanto hardware virtuale e ascolta su `127.0.0.1:5000`. Nessuna libreria GPIO è necessaria sul PC.**
 
 ## Avvio sul PC Windows
@@ -29,7 +31,7 @@ Il server usa Waitress anche in locale, senza debugger. Non vengono eseguiti com
 5. Chiudi il browser lasciando Python in esecuzione: lo scheduler continua a lavorare. Riapri la dashboard per verificare lo stato.
 6. Riavvia il server: modalità e orari rimangono salvati; l'accensione manuale riparte sempre spenta. In automatico viene ricalcolata la fascia corrente.
 
-Le letture **24,6 °C** e **62%** sono esempi fissi e mostrano esplicitamente **Simulato**. Non sono una simulazione termica. In modalità `real`, senza sensori implementati e collegati, l'API restituisce `null` e la dashboard mostra **Non disponibile**.
+Le letture **24,6 °C** e **62%** in mock sono esempi fissi e mostrano esplicitamente **Simulato**. Non sono una simulazione termica. In modalità `real` sono supportati **DS18B20 per la temperatura** e **DHT11 per l'umidità relativa dell'aria**. Se disabilitati, assenti, guasti o senza letture recenti, l'API restituisce `null` e la dashboard mostra **Non disponibile**, con lo stato e il motivo.
 
 I comandi aggiornano subito l'interfaccia; il polling ogni 3 secondi sincronizza anche gli altri browser. Quando il server non risponde, i comandi vengono disabilitati e i valori vengono indicati come non disponibili. Il browser riprova automaticamente. Un comando andato in timeout non viene ritentato alla cieca: il client rilegge prima lo stato.
 
@@ -48,6 +50,12 @@ Copia `.env.example` in `.env` se vuoi personalizzare il comportamento. Le varia
 | `RELAY_ACTIVE_HIGH` | `false` in mock | `true` oppure `false`, obbligatorio esplicitamente in `real` |
 | `API_TOKEN` | vuoto | In LAN almeno 32 caratteri casuali |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | IP e nomi ammessi nell'header Host, senza porta, URL o wildcard |
+| `DS18B20_ENABLED` | `false` | Abilita la temperatura reale, solo in `HARDWARE_MODE=real` |
+| `DS18B20_PIN` | `4` | BCM del bus 1-Wire: deve corrispondere all'overlay del kernel |
+| `DS18B20_ID` | vuoto | ID della sonda, ad esempio `28-000000abcdef`; automatico solo se è presente una sola sonda |
+| `DHT11_ENABLED` | `false` | Abilita l'umidità reale, solo in `HARDWARE_MODE=real` |
+| `DHT11_PIN` | `22` | BCM del segnale DHT11: deve corrispondere all'overlay del kernel |
+| `DHT11_DEVICE` | vuoto | Nome IIO, ad esempio `iio:device0`; automatico solo con un DHT rilevato |
 
 Pin e polarità si modificano a servizio arrestato e richiedono un riavvio. Non si cambiano da una richiesta web, per evitare di azionare il pin sbagliato durante una riconfigurazione. La dashboard ne mostra la configurazione.
 
@@ -129,7 +137,7 @@ Prepara Raspberry Pi OS **Desktop 32-bit**, con Python 3.10 o successivo, alimen
 5. Aggiunge l'utente al gruppo `gpio`, crea e abilita il servizio systemd con l'utente reale. Non esegue Flask come root.
 6. Installa l'autostart XDG per i desktop X11 e aggiunge l'avvio a `~/.config/labwc/autostart` per Wayland/labwc, preservando le righe esistenti. Il lock del Kiosk evita doppi avvii.
 
-Per la sandbox del servizio l'installer richiede `DATA_DIR=data`. Se vuoi una directory esterna, modifica insieme la configurazione e `ReadWritePaths` nell'unit systemd. Prima di rilanciare l'installer con hardware in `real`, scollega il carico: l'installazione può riavviare un servizio guasto.
+Per la sandbox del servizio l'installer richiede `DATA_DIR=data`. Il processo viene avviato con directory corrente `data/`, perché `lgpio` crea le proprie pipe di notifica `.lgd-nfy*` nella directory corrente già durante l'importazione. Codice e configurazione rimangono in sola lettura. L'applicazione risolve i percorsi dal progetto, quindi il database rimane `data/greenhouse.sqlite3`, senza una seconda directory `data/data`. Se vuoi una directory esterna, modifica insieme la configurazione, `WorkingDirectory` e `ReadWritePaths` nell'unit systemd. Prima di rilanciare l'installer con hardware in `real`, scollega il carico: l'installazione può riavviare un servizio guasto.
 
 Verifica prima la dashboard in mock. Dopo le verifiche hardware a carico scollegato, arresta il servizio, imposta pin e polarità corretti in `.env`, poi riavvia:
 
@@ -146,7 +154,172 @@ journalctl -u smart-greenhouse -n 80 --no-pager
 
 Nessun fallback silenzioso alla simulazione: se il dispositivo o `lgpio` falliscono, l'avvio reale fallisce. GPIO Zero viene importato soltanto nel controller reale. `RELAY_PIN` usa BCM (GPIO17 corrisponde al pin fisico 11 sul connettore a 40 pin), non il numero fisico del connettore.
 
-## Touchscreen DSI e Chromium Kiosk
+### Errore `.lgd-nfy` all'avvio in modalità reale
+
+Se il journal riporta `xCreatePipe: Can't set permissions` nella cartella del progetto e poi `FileNotFoundError: .lgd-nfy-3`, controlla la directory corrente del servizio. Una versione precedente del template avviava Python nella cartella del codice, che la sandbox systemd rende di sola lettura. L'errore si presenta durante l'importazione di `lgpio`, prima di richiedere il pin: quel traceback non dimostra un guasto del relè o un pin errato.
+
+Il template aggiornato avvia il processo in `data/`, già autorizzata in scrittura. Per correggere un'installazione esistente senza reinstallare, esegui **nella sessione SSH sul Raspberry**, adattando il percorso della prima riga:
+
+```bash
+cd ~/ProgettoSerra
+sudo systemctl stop smart-greenhouse
+mkdir -p data
+sudo mkdir -p /etc/systemd/system/smart-greenhouse.service.d
+printf '[Service]\nWorkingDirectory=%s/data\n' "$PWD" | sudo tee /etc/systemd/system/smart-greenhouse.service.d/working-directory.conf
+sudo systemctl daemon-reload
+sudo systemctl reset-failed smart-greenhouse
+sudo systemctl start smart-greenhouse
+systemctl status smart-greenhouse --no-pager -l
+curl -sS --max-time 5 http://127.0.0.1:5000/health
+```
+
+Se hai cambiato `PORT`, adatta anche l'URL dell'ultima riga. Il file di override persiste dopo i riavvii. `reset-failed` rimuove il blocco dovuto ai precedenti avvii falliti. La correzione conserva `.env`, orari, database e protezioni della sandbox. Il servizio deve risultare `active (running)` e `/health` rispondere `{"status":"ok"}`; il comando GPIO e il carico devono comunque essere verificati sull'hardware reale. Se compare un errore diverso, leggi il nuovo journal prima di cambiare altre impostazioni.
+
+Riferimenti: [directory di lavoro systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=) e [directory di lavoro della libreria lgpio](https://github.com/joan2937/lg/blob/master/lgUtil.c).
+
+## Sensori DS18B20 e DHT11
+
+L'applicazione legge una sonda **DS18B20** per la temperatura e un **DHT11** per l'umidità relativa dell'aria. Il DHT11 contiene anche un termometro, ma non viene usato come sostituto del DS18B20: se la sonda manca, la temperatura rimane non disponibile. Le confezioni da due/tre unità non richiedono di collegarle tutte.
+
+I sensori usano i driver Linux già previsti da Raspberry Pi OS: `w1_therm` tramite l'overlay `w1-gpio` e IIO tramite l'overlay `dht11`. Non sono necessarie nuove dipendenze Python, compilatori o librerie DHT sul PC. L'installer dell'app non modifica automaticamente gli overlay di boot.
+
+### Collegamenti previsti sul Raspberry Pi 3B
+
+Collega i sensori a Raspberry spento e disalimentato. Per il relè già configurato su BCM15, questa disposizione mantiene i tre segnali separati:
+
+| Dispositivo / segnale | GPIO BCM | Pin fisico del connettore a 40 pin |
+| --- | --- | --- |
+| Relè lampada già configurato | 15 | 10 |
+| DS18B20: DQ / DATA | 4 | 7 |
+| DHT11: DATA / OUT / S | 22 | 15 |
+| Alimentazione sensori VDD / VCC | — | 1 oppure 17: **3,3 V** |
+| Massa sensori GND | — | 6 oppure 9: **GND** |
+
+**GPIO15 e pin fisico 15 sono distinti:** il secondo è GPIO22, usato qui per il DHT11. La numerazione BCM vale sia nel `.env` sia negli overlay. Verifica che gli altri dispositivi non usino questi pin.
+
+Per il **DS18B20 a tre fili**, collega VDD a 3,3 V, GND alla massa e DATA a BCM4. Serve una resistenza **4,7 kΩ fra DATA e 3,3 V**, salvo che sia già presente su un adattatore. Usa l'alimentazione a tre fili, senza modalità parassita. Identifica i fili con lo schema della sonda AZDelivery: non affidarti soltanto ai colori, che possono variare. La protezione della sonda non rende impermeabili giunzioni, resistenza o Raspberry.
+
+Per il **DHT11**, usa VCC a 3,3 V, GND alla massa e DATA a BCM22. Per la variante a **tre pin**, segui le etichette sul modulo: l'ordine dei pin può cambiare e il pull-up può essere già presente. Per la variante a **quattro piedini**, segui il pinout del produttore, lascia NC scollegato e aggiungi un pull-up **10 kΩ fra DATA e 3,3 V** se assente. Questo collegamento mantiene il segnale nei limiti a 3,3 V del Raspberry: non collegare direttamente un'uscita con pull-up a 5 V. Il DHT11 misura l'umidità dell'aria, non del terreno; sistemalo al riparo da acqua, condensa e irrigazione diretta. Per limiti di misura e accuratezza consulta la scheda del modello ricevuto.
+
+Riferimenti: [pinout Raspberry Pi](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html), [datasheet DS18B20](https://www.analog.com/media/en/technical-documentation/data-sheets/DS18B20.pdf), [DHT11 AZDelivery e relativi schemi](https://www.az-delivery.de/en/products/5-x-dht11-temperatursensor), [pull-up DHT](https://learn.adafruit.com/dht/dht-circuitpython-code).
+
+### Abilitare i driver sul Raspberry
+
+Questi comandi vanno eseguiti solo sul Raspberry, anche da SSH. Con il servizio arrestato, fai una copia del file di boot e aprilo:
+
+```bash
+sudo systemctl stop smart-greenhouse
+sudo cp -n /boot/firmware/config.txt /boot/firmware/config.txt.before-greenhouse-sensors
+sudo nano /boot/firmware/config.txt
+```
+
+Su Bookworm/Trixie il file è `/boot/firmware/config.txt`. Se la tua installazione usa un percorso diverso, verifica quello effettivo prima di modificarlo. In fondo al file, sotto una sezione `[all]`, aggiungi **una sola volta**, adattando eventuali righe già presenti:
+
+```ini
+[all]
+dtoverlay=w1-gpio,gpiopin=4
+dtoverlay=dht11,gpiopin=22
+```
+
+Non duplicare un overlay 1-Wire già attivato da `raspi-config`. Non configurare entrambi i sensori su BCM4: è il valore predefinito di entrambi gli overlay. I pin devono coincidere con quelli del cablaggio e del `.env`. Il driver kernel prende possesso dei pin dei sensori; l'app controlla direttamente con GPIO Zero soltanto quello del relè.
+
+Fonti: [overlay ufficiali Raspberry Pi](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/arch/arm/boot/dts/overlays/README), [driver DS18B20](https://docs.kernel.org/w1/slaves/w1_therm.html), [driver DHT11](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/iio/humidity/dht11.c).
+
+### Configurare l'app e verificare le misure
+
+Prima trasferisci sul Raspberry il codice aggiornato, a servizio fermo, conservando `.env` e `data/`. Puoi usare `scripts/export_project.py` e la procedura SSH/SCP descritta sopra. Non è necessario reinstallare le dipendenze per questi due sensori: il supporto è nel kernel e nella libreria standard Python.
+
+Nel `.env` **aggiungi o aggiorna** queste impostazioni, conservando rete, token, polarità del relè e le altre impostazioni esistenti:
+
+```dotenv
+HARDWARE_MODE=real
+DS18B20_ENABLED=true
+DS18B20_PIN=4
+DS18B20_ID=
+DHT11_ENABLED=true
+DHT11_PIN=22
+DHT11_DEVICE=
+```
+
+Le variabili `*_PIN` nel `.env` non attivano gli overlay: documentano la configurazione e consentono di rifiutare conflitti tra sensori e relè. Il kernel deve essere configurato separatamente come sopra. I sensori restano disabilitati per default nelle nuove installazioni, finché non imposti esplicitamente `true`. In mock rimangono sempre simulati, anche se queste opzioni sono abilitate.
+
+Se colleghi il **DS18B20 a GPIO17 (pin fisico 11)**, sostituisci la riga dell'overlay 1-Wire con `dtoverlay=w1-gpio,gpiopin=17` e imposta `DS18B20_ENABLED=true` e `DS18B20_PIN=17` nel `.env`. Non lasciare attiva anche la vecchia riga 1-Wire su BCM4. Collega il pull-up da 4,7 kΩ fra il DATA effettivamente usato (ora BCM17) e 3,3 V. Il relè e il DHT11 devono restare su pin diversi: ad esempio relè BCM15 e DHT11 BCM22, se questi sono i collegamenti reali. In particolare, il valore di esempio `RELAY_PIN=17` non può essere usato insieme alla sonda su BCM17. Arresta il servizio prima della modifica e riavvia il Raspberry dopo aver salvato l'overlay: il solo riavvio di Flask non modifica il pin del bus kernel.
+
+Dopo aver salvato gli overlay e il `.env`, riavvia il Raspberry con `sudo reboot`; la sessione SSH si chiuderà. Quindi riconnettiti e controlla:
+
+```bash
+ls /sys/bus/w1/devices/28-*/w1_slave
+cat /sys/bus/iio/devices/iio:device*/name
+systemctl status smart-greenhouse --no-pager -l
+curl -sS http://127.0.0.1:5000/api/status
+```
+
+L'ultima richiesta è eseguita sul Raspberry tramite loopback, quindi non richiede il token LAN. La dashboard locale mostra la fonte DS18B20/DHT11 e l'ora della misura; i dati disponibili hanno `status: "ok"`. Il kernel converte la temperatura in millesimi di grado e l'umidità in millesimi di percentuale: l'app espone rispettivamente °C e %.
+
+Se sono collegate **due sonde DS18B20**, scegli quella da visualizzare impostando `DS18B20_ID` con l'ID reale mostrato da `ls`, senza `/w1_slave`. Non impostare l'ID di esempio della documentazione. In assenza della sonda selezionata, l'app non passa silenziosamente all'altra. Per più dispositivi DHT sullo stesso Raspberry imposta `DHT11_DEVICE` con il nome IIO corretto, verificando nuovamente la scelta dopo modifiche hardware: l'indice IIO può cambiare fra avvii.
+
+### Errori, frequenza e verifiche fisiche
+
+Ogni sensore ha un worker indipendente: una lettura ogni circa **5 secondi**, con l'eventuale tempo di conversione del driver. Le richieste HTTP leggono soltanto la cache e non aspettano l'hardware. Il DS18B20 deve superare il CRC; il kernel verifica checksum e tempi del DHT11. Valori fuori dai limiti fisici vengono rifiutati.
+
+Un errore invalida subito il valore mostrato. Un dato senza aggiornamenti per **20 secondi** diventa `stale` e viene nascosto; lo stesso limite segnala una prima lettura bloccata. Non viene inventato né mantenuto visibile come attuale un valore vecchio. La cache si ripristina automaticamente quando ricominciano le letture. L'ora dell'ultima lettura riuscita rimane nei metadati, insieme all'età del dato e al motivo dell'errore.
+
+Il guasto di un sensore non spegne né blocca automaticamente la lampada, la cui logica rimane manuale/oraria. `/health` continua a indicare la salute del servizio lampada; `/api/status` espone separatamente `system.sensors_healthy`. Per eventuali automazioni basate su temperatura o umidità serviranno regole e interblocchi dedicati.
+
+Se non ci sono misure, consulta `journalctl -u smart-greenhouse -n 60 --no-pager` e, per errori del driver, `sudo journalctl -k -b -n 80 --no-pager`. Verifica overlay, alimentazione, pull-up, contatti, pin, ID e assenza di condensa. Il messaggio DHT11 può indicare un timeout o un errore I/O dovuto alla decodifica del segnale: non sostituirlo con letture simulate.
+
+Prima dell'uso in serra, confronta le misure con uno strumento di riferimento, controlla che la sonda scelta sia quella fisicamente prevista e verifica almeno scollegamento, riconnessione, riavvio e funzionamento sotto il carico reale di Chromium. I test sul PC simulano i file sysfs e gli errori dei driver; non attestano cablaggio, precisione o affidabilità elettrica dei sensori acquistati.
+
+## Uso senza schermo: browser da PC e telefono
+
+Esegui la configurazione nella sessione SSH sul Raspberry. Il servizio `smart-greenhouse` è associato a `multi-user.target`: continua ad avviarsi e a gestire lampada e sensori anche senza sessione grafica e senza browser aperti.
+
+Per disattivare il desktop nei prossimi avvii e confermare l'avvio del servizio:
+
+```bash
+sudo systemctl set-default multi-user.target
+sudo systemctl enable smart-greenhouse
+systemctl get-default
+```
+
+L'ultimo comando deve restituire `multi-user.target`. Il cambiamento del target di default si applica al prossimo avvio; non arresta subito il desktop già aperto. Puoi mantenere installati i pacchetti grafici: quando il desktop non parte, i suoi autostart non lanciano Chromium o il Kiosk. L'installer attuale prepara anche i file Kiosk, ma il servizio Flask non ne dipende.
+
+### Abilitare prima l'accesso dalla rete locale
+
+Se nel `.env` è rimasto `NETWORK_MODE=local`, il server accetta solo connessioni sul Raspberry. Prima di spegnere o scollegare lo schermo, prepara la modalità LAN e verifica l'accesso dal PC/telefono.
+
+```bash
+cd ~/ProgettoSerra
+.venv-pi/bin/python -c "import secrets; print(secrets.token_urlsafe(32))"
+nano .env
+```
+
+Il comando Python stampa un token casuale. Copialo nel `.env`, modificando le righe già presenti (senza duplicarle) e mantenendo i parametri di relè e sensori. Esempio per il Raspberry `raspberry-serra`, con IP Wi-Fi `192.168.1.9` rilevato durante la configurazione:
+
+```dotenv
+NETWORK_MODE=lan
+API_TOKEN=INCOLLA_QUI_IL_TOKEN_CASUALE_GENERATO
+ALLOWED_HOSTS=localhost,127.0.0.1,[::1],raspberry-serra.local,192.168.1.9
+```
+
+Sostituisci l'IP se è cambiato; per usare anche l'indirizzo Ethernet aggiungi quello attuale alla lista. Conserva il token sul tuo dispositivo e non inviarlo in chat. Il browser di rete lo richiede per accedere alle API. Vedi anche la sezione Accesso da smartphone e LAN per i limiti dell'accesso HTTP su una rete privata.
+
+Applica le impostazioni:
+
+```bash
+sudo systemctl restart smart-greenhouse
+systemctl status smart-greenhouse --no-pager -l
+```
+
+Con servizio `active (running)`, apri dal PC o telefono **http://192.168.1.9:5000** oppure **http://raspberry-serra.local:5000** se il dispositivo risolve il nome mDNS. Entrambi i dispositivi devono essere nella stessa rete e il nome/IP usato deve essere presente in `ALLOWED_HOSTS`. Verifica la dashboard prima di riavviare il Raspberry.
+
+Per scollegare il flat DSI, arresta il Raspberry con `sudo poweroff`, attendi lo spegnimento e togli l'alimentazione prima di scollegare il display. Riaccendendo, il sistema parte senza desktop e il servizio rimane disponibile in LAN. Puoi verificare da SSH con `systemctl get-default`, `systemctl is-active smart-greenhouse` e `nmcli device status`.
+
+Per tornare in futuro all'avvio grafico, imposta `sudo systemctl set-default graphical.target` e riavvia. La rimozione del desktop o di Chromium non è necessaria per il funzionamento senza schermo.
+
+Riferimenti: [target di avvio systemd](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#set-default%20TARGET) e [avvio console/desktop su Raspberry Pi OS](https://www.raspberrypi.com/documentation/computers/configuration.html).
+
+## Touchscreen DSI e Chromium Kiosk (opzionale)
 
 Collega il flat DSI **a Raspberry spento e disalimentato**, secondo le istruzioni del modello di display. Il display ufficiale compatibile viene normalmente rilevato dall'OS; i pannelli di terzi possono richiedere overlay/driver del produttore. Non vengono imposti overlay o rotazioni generici, perché dipendono dal pannello.
 
@@ -184,7 +357,7 @@ Sul PC:
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-I test coprono API e input invalidi, inizializzazione mock senza import GPIO, salvataggio e riavvio, fasce ordinarie/notturne e confini, cambio dell'ora, scheduler senza browser, serializzazione dei comandi, lock di processo, protezioni LAN/origine/Host, assenza sensori reali, guasti GPIO e SQLite, stato sconosciuto e chiusura sicura. L'adattatore reale viene provato con un dispositivo fittizio in entrambe le polarità: **non sono test elettrici sul Raspberry**.
+I test coprono API e input invalidi, inizializzazione mock senza import GPIO, salvataggio e riavvio, fasce ordinarie/notturne e confini, cambio dell'ora, scheduler senza browser, serializzazione dei comandi, lock di processo, protezioni LAN/origine/Host, guasti GPIO e SQLite, stato sconosciuto e chiusura sicura. Per DS18B20/DHT11 sono verificati conversione delle unità, CRC/formati errati, sensori assenti o multipli, selezione dell'ID, conflitti di pin, scadenza e ripristino dei dati, isolamento di un sensore bloccato rispetto all'altro e alle API lampada, assenza di fallback a misure inventate. L'adattatore GPIO reale viene provato con un dispositivo fittizio in entrambe le polarità: **non sono test elettrici sul Raspberry**.
 
 Per ripetere anche lo smoke test del browser, con Chrome/Chromium/Edge già installato:
 
@@ -237,7 +410,8 @@ scheduler.py                Thread unico e regole orarie, heartbeat systemd
 hardware/                   Interfaccia, MockGPIOController, RealGPIOController
 services/lamp.py            Stato e lock, modalità, gestione guasti
 services/storage.py         Configurazione SQLite
-services/sensors.py         Punto di estensione per sensori
+hardware/sensors.py         Lettori kernel DS18B20 e DHT11
+services/sensors.py         Worker separati, cache e scadenza delle letture
 services/instance_lock.py   Lock Windows/Linux del processo
 templates/index.html        Dashboard
 static/                     CSS, JavaScript e icona SVG locali
@@ -246,7 +420,7 @@ scripts/export_project.py   Archivio trasferibile senza segreti
 tests/                      Test senza hardware
 ```
 
-Per aggiungere sensori implementa un provider nel servizio di monitoraggio, mantenendo `value: null` / `status: unavailable` in caso di assenza o errore. I sensori reali futuri devono avere timeout, identificazione e data della lettura: non bloccare il thread che gestisce il relè. Per altri attuatori aggiungi controller/servizi separati con le proprie regole; non usare direttamente i GPIO negli endpoint Flask.
+Per aggiungere sensori implementa un reader in `hardware/sensors.py` e associalo a un worker nel servizio di monitoraggio. Mantieni `value: null` in caso di assenza, errore o dato scaduto, con identificazione, timestamp e motivo. Il reader non deve bloccare il thread che gestisce il relè. Per altri attuatori aggiungi controller/servizi separati con le proprie regole; non usare direttamente i GPIO negli endpoint Flask.
 
 ## Fonti tecniche
 

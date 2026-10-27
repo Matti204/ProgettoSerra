@@ -171,8 +171,38 @@ def main():
                 backend = start_backend()
                 cdp.until("document.getElementById('connection-text').textContent === 'Connesso'", "riconnessione automatica")
                 assert not cdp.evaluate("document.getElementById('lamp-toggle').disabled")
+                # Fixture solo del test: verifica rendering delle nuove letture reali
+                # senza importare driver o collegare sensori al computer.
+                sensor_render = cdp.evaluate("""(() => {
+                    authNeeded = true;
+                    const fixture = structuredClone(state);
+                    fixture.system.hardware_mode = 'real';
+                    fixture.system.sensors_healthy = true;
+                    Object.assign(fixture.sensors[0], {value:19.125, source:'DS18B20', status:'ok', configured:true, gpio:4, sampled_at:fixture.system.server_time});
+                    Object.assign(fixture.sensors[1], {value:73, source:'DHT11', status:'ok', configured:true, gpio:22, sampled_at:fixture.system.server_time});
+                    render(fixture);
+                    const good = document.getElementById('temperature-tag').textContent === 'DS18B20'
+                        && document.getElementById('humidity-tag').textContent === 'DHT11'
+                        && document.getElementById('temperature-note').textContent.includes('lettura delle');
+                    fixture.sensors[0].value = null;
+                    fixture.sensors[0].status = 'stale';
+                    fixture.sensors[0].message = 'Lettura scaduta.';
+                    fixture.sensors[1].value = null;
+                    fixture.sensors[1].status = 'error';
+                    fixture.sensors[1].message = 'DHT11 non risponde.';
+                    fixture.system.sensors_healthy = false;
+                    render(fixture);
+                    const failed = document.getElementById('temperature-value').textContent === 'Non disponibile'
+                        && document.getElementById('temperature-tag').textContent === 'Scaduto'
+                        && document.getElementById('humidity-note').textContent === 'DHT11 non risponde.'
+                        && !document.getElementById('lamp-toggle').disabled;
+                    authNeeded = false;
+                    return good && failed;
+                })()""")
+                assert sensor_render, "Rendering di letture reali, errori e scadenza"
+                cdp.evaluate("refresh()")
                 assert not cdp.errors, f"Errori JavaScript: {cdp.errors}"
-                print("UI OK: comandi, orari, conflitti, polling, offline/recupero, desktop 1440, touch 800, mobile 390.")
+                print("UI OK: comandi, orari, sensori/errori/scadenza, polling, offline/recupero, desktop 1440, touch 800, mobile 390.")
                 print(f"Screenshot: {output}")
             finally:
                 if cdp:

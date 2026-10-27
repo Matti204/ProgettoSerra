@@ -11,7 +11,9 @@ NotifyAccess=main
 User=@@USER@@
 Group=@@GROUP@@
 SupplementaryGroups=gpio
-WorkingDirectory=@@PROJECT@@
+# lgpio crea le pipe .lgd-nfy* nella directory corrente all'importazione.
+# data/ è scrivibile nella sandbox; codice e configurazione restano in sola lettura.
+WorkingDirectory=@@PROJECT@@/data
 EnvironmentFile=@@PROJECT@@/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
